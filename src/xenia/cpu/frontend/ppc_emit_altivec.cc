@@ -245,14 +245,26 @@ XEEMITTER(lvlxl128, VX128_1(4, 1539), VX128_1)(PPCHIRBuilder& f, InstrData& i) {
 
 int InstrEmit_lvrx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra,
                     uint32_t rb) {
+  // NOTE: if eb == 0 (so 16b aligned) then no data is loaded. This is important
+  // as often times memcpy's will use this to handle the remaining <=16b of a
+  // buffer, which sometimes may be nothing and hang off the end of the valid
+  // page area. We still need to zero the resulting register, though.
   Value* ea = CalculateEA_0(f, ra, rb);
   Value* eb = f.And(f.Truncate(ea, INT8_TYPE), f.LoadConstantInt8(0xF));
+  // Skip if %16=0 (just load zero).
+  auto load_label = f.NewLabel();
+  auto end_label = f.NewLabel();
+  f.BranchTrue(eb, load_label);
+  f.StoreVR(vd, f.LoadZeroVec128());
+  f.Branch(end_label);
+  f.MarkLabel(load_label);
   // ea &= ~0xF
   ea = f.And(ea, f.LoadConstantUint64(~0xFull));
   // v = (new >> (16 - eb))
   Value* v = f.Permute(f.LoadVectorShl(eb), f.LoadZeroVec128(),
                        f.ByteSwap(f.Load(ea, VEC128_TYPE)), INT8_TYPE);
   f.StoreVR(vd, v);
+  f.MarkLabel(end_label);
   return 0;
 }
 XEEMITTER(lvrx, 0x7C00044E, X)(PPCHIRBuilder& f, InstrData& i) {
@@ -304,10 +316,15 @@ XEEMITTER(stvlxl128, VX128_1(4, 1795), VX128_1)(PPCHIRBuilder& f,
 
 int InstrEmit_stvrx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra,
                      uint32_t rb) {
-  // NOTE: if eb == 0 (so 16b aligned) this equals new_value
-  //       we could optimize this to prevent the other load/mask, in that case.
+  // NOTE: if eb == 0 (so 16b aligned) then no data is loaded. This is important
+  // as often times memcpy's will use this to handle the remaining <=16b of a
+  // buffer, which sometimes may be nothing and hang off the end of the valid
+  // page area.
   Value* ea = CalculateEA_0(f, ra, rb);
   Value* eb = f.And(f.Truncate(ea, INT8_TYPE), f.LoadConstantInt8(0xF));
+  // Skip if %16=0 (no data to store).
+  auto skip_label = f.NewLabel();
+  f.BranchFalse(eb, skip_label);
   // ea &= ~0xF
   ea = f.And(ea, f.LoadConstantUint64(~0xFull));
   // v = (old & ~mask) | ((new << eb) & mask)
@@ -320,6 +337,7 @@ int InstrEmit_stvrx_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t ra,
   Value* v = f.Or(f.And(old_value, f.Not(mask)), f.And(new_value, mask));
   // ea &= ~0xF (handled above)
   f.Store(ea, f.ByteSwap(v));
+  f.MarkLabel(skip_label);
   return 0;
 }
 XEEMITTER(stvrx, 0x7C00054E, X)(PPCHIRBuilder& f, InstrData& i) {
@@ -580,20 +598,23 @@ XEEMITTER(vcfpuxws128, VX128_3(6, 624), VX128_3)(PPCHIRBuilder& f,
 
 int InstrEmit_vcmpbfp_(PPCHIRBuilder& f, InstrData& i, uint32_t vd, uint32_t va,
                        uint32_t vb, uint32_t rc) {
+  // if vA or vB are NaN, the 2 high-order bits are set (0xC0000000)
   Value* va_value = f.LoadVR(va);
   Value* vb_value = f.LoadVR(vb);
-  Value* gt = f.VectorCompareSGT(va_value, vb_value, FLOAT32_TYPE);
-  Value* lt =
-      f.Not(f.VectorCompareSGE(va_value, f.Neg(vb_value), FLOAT32_TYPE));
+  Value* ge = f.VectorCompareSGE(va_value, vb_value, FLOAT32_TYPE);
+  Value* le =
+      f.Not(f.VectorCompareSGT(va_value, f.Neg(vb_value), FLOAT32_TYPE));
   Value* v =
-      f.Or(f.And(gt, f.LoadConstantVec128(vec128i(0x80000000, 0x80000000,
+      f.Or(f.And(ge, f.LoadConstantVec128(vec128i(0x80000000, 0x80000000,
                                                   0x80000000, 0x80000000))),
-           f.And(lt, f.LoadConstantVec128(vec128i(0x40000000, 0x40000000,
+           f.And(le, f.LoadConstantVec128(vec128i(0x40000000, 0x40000000,
                                                   0x40000000, 0x40000000))));
   f.StoreVR(vd, v);
   if (rc) {
     // CR0:4 = 0; CR0:5 = VT == 0; CR0:6 = CR0:7 = 0;
-    assert_always();
+    // If all of the elements are within bounds, CR6[2] is set
+    // FIXME: Does not affect CR6[0], but the following function does.
+    f.UpdateCR6(f.Or(ge, le));
   }
   return 0;
 }

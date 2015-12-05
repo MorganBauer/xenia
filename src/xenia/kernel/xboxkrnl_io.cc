@@ -197,9 +197,6 @@ dword_result_t NtReadFile(dword_t file_handle, dword_t event_handle,
       // Queue the APC callback. It must be delivered via the APC mechanism even
       // though were are completing immediately.
       if ((uint32_t)apc_routine_ptr & ~1) {
-        // Bejeweled 3 calls ReadFileEx with a NULL completion routine!
-        assert_not_zero((uint32_t)apc_context);
-
         if (apc_context) {
           auto thread = XThread::GetCurrentThread();
           thread->EnqueueApc((uint32_t)apc_routine_ptr & ~1, apc_context,
@@ -390,7 +387,6 @@ dword_result_t NtQueryInformationFile(
         // Internal unique file pointer. Not sure why anyone would want this.
         assert_true(length == 8);
         info = 8;
-
         // TODO(benvanik): use pointer to fs:: entry?
         xe::store_and_swap<uint64_t>(file_info_ptr,
                                      xe::memory::hash_combine(0, file->path()));
@@ -401,7 +397,6 @@ dword_result_t NtQueryInformationFile(
         // };
         assert_true(length == 8);
         info = 8;
-
         xe::store_and_swap<uint64_t>(file_info_ptr, file->position());
         break;
       case XFileNetworkOpenInformation: {
@@ -430,6 +425,9 @@ dword_result_t NtQueryInformationFile(
       }
       case XFileXctdCompressionInformation: {
         assert_true(length == 4);
+        XELOGE(
+            "NtQueryInformationFile(XFileXctdCompressionInformation) "
+            "unimplemented");
         // This is wrong and puts files into wrong states for games that use
         // XctdDecompression.
         /*
@@ -457,7 +455,7 @@ dword_result_t NtQueryInformationFile(
       case XFileSectorInformation:
         // TODO(benvanik): return sector this file's on.
         assert_true(length == 4);
-
+        XELOGE("NtQueryInformationFile(XFileSectorInformation) unimplemented");
         result = X_STATUS_UNSUCCESSFUL;
         info = 0;
         break;

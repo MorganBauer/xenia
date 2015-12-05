@@ -7,8 +7,11 @@
  ******************************************************************************
  */
 
-#include "xenia/apu/xma_context.h"
 #include "xenia/apu/xma_decoder.h"
+
+#include <gflags/gflags.h>
+
+#include "xenia/apu/xma_context.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/ring_buffer.h"
@@ -19,8 +22,8 @@
 #include "xenia/profiling.h"
 
 extern "C" {
-#include "libavutil/log.h"
-}
+#include "third_party/libav/libavutil/log.h"
+}  // extern "C"
 
 // As with normal Microsoft, there are like twelve different ways to access
 // the audio APIs. Early games use XMA*() methods almost exclusively to touch
@@ -46,6 +49,8 @@ extern "C" {
 // do this, it's likely they are either passing the context to XAudio or
 // using the XMA* functions.
 
+DEFINE_bool(libav_verbose, false, "Verbose libav output (debug and above)");
+
 namespace xe {
 namespace apu {
 
@@ -55,9 +60,32 @@ XmaDecoder::XmaDecoder(cpu::Processor* processor)
 XmaDecoder::~XmaDecoder() = default;
 
 void av_log_callback(void* avcl, int level, const char* fmt, va_list va) {
+  if (!FLAGS_libav_verbose && level > AV_LOG_WARNING) {
+    return;
+  }
+
+  char level_char = '?';
+  switch (level) {
+    case AV_LOG_ERROR:
+      level_char = '!';
+      break;
+    case AV_LOG_WARNING:
+      level_char = 'w';
+      break;
+    case AV_LOG_INFO:
+      level_char = 'i';
+      break;
+    case AV_LOG_VERBOSE:
+      level_char = 'v';
+      break;
+    case AV_LOG_DEBUG:
+      level_char = 'd';
+      break;
+  }
+
   StringBuffer buff;
   buff.AppendVarargs(fmt, va);
-  xe::log_line('i', "libav: %s", buff.GetString());
+  xe::LogLineFormat(level_char, "libav: %s", buff.GetString());
 }
 
 X_STATUS XmaDecoder::Setup(kernel::KernelState* kernel_state) {
@@ -106,7 +134,13 @@ void XmaDecoder::WorkerThreadMain() {
     for (uint32_t n = 0; n < kContextCount; n++) {
       XmaContext& context = contexts_[n];
       context.Work();
+
+      // TODO: Need thread safety to do this.
+      // Probably not too important though.
+      // registers_.current_context = n;
+      // registers_.next_context = (n + 1) % kContextCount;
     }
+    xe::threading::MaybeYield();
   }
 }
 
@@ -184,7 +218,6 @@ uint32_t XmaDecoder::ReadRegister(uint32_t addr) {
     // number
     registers_.current_context = registers_.next_context;
     registers_.next_context = (registers_.next_context + 1) % kContextCount;
-    value = registers_.current_context;
   }
 
   value = xe::byte_swap(value);
